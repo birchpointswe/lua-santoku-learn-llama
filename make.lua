@@ -1,6 +1,6 @@
 local env = {
   name = "santoku-learn-llama",
-  version = "0.0.10-1",
+  version = "0.0.11-1",
   license = "MIT",
   public = true,
   dependencies = {

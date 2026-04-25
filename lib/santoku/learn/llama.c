@@ -9,7 +9,29 @@
 #include <omp.h>
 
 #define TK_LLAMA_MT "tk_llama_t"
+#define TK_LLAMA_GEN_MT "tk_llama_gen_t"
 #define TK_LLAMA_DEFAULT_N_SEQ 32
+#define TK_LLAMA_GEN_DEFAULT_N_CTX 4096
+#define TK_LLAMA_GEN_DEFAULT_MAX_TOKENS 64
+#define TK_LLAMA_GEN_DEFAULT_TOP_K 40
+#define TK_LLAMA_GEN_DEFAULT_TOP_P 0.95f
+#define TK_LLAMA_GEN_DEFAULT_MIN_P 0.05f
+#define TK_LLAMA_GEN_DEFAULT_TEMP 0.0f
+#define TK_LLAMA_GEN_DEFAULT_REPEAT_PENALTY 1.0f
+#define TK_LLAMA_GEN_DEFAULT_PENALTY_LAST_N 64
+
+typedef enum {
+  TK_LLAMA_TEMPLATE_RAW = 0,
+  TK_LLAMA_TEMPLATE_LLAMA3,
+  TK_LLAMA_TEMPLATE_CHATML,
+} tk_llama_template_t;
+
+static int tk_llama_parse_template (const char *s, tk_llama_template_t *out) {
+  if (!s || !*s || strcmp(s, "raw") == 0) { *out = TK_LLAMA_TEMPLATE_RAW; return 0; }
+  if (strcmp(s, "llama3") == 0) { *out = TK_LLAMA_TEMPLATE_LLAMA3; return 0; }
+  if (strcmp(s, "chatml") == 0) { *out = TK_LLAMA_TEMPLATE_CHATML; return 0; }
+  return -1;
+}
 
 static int tk_llama_refs = 0;
 
@@ -230,10 +252,331 @@ static luaL_Reg tk_llama_mt_fns[] = {
   { NULL, NULL }
 };
 
-static int tk_llama_create_lua (lua_State *L) {
-  const char *path = luaL_checkstring(L, 1);
-  int32_t n_seq = luaL_optinteger(L, 2, TK_LLAMA_DEFAULT_N_SEQ);
-  int32_t n_threads = omp_get_max_threads();
+typedef struct {
+  struct llama_model *model;
+  struct llama_context *ctx;
+  int32_t n_vocab;
+  int32_t n_ctx;
+  uint32_t seed;
+  tk_llama_template_t tmpl;
+  bool destroyed;
+} tk_llama_gen_t;
+
+static inline tk_llama_gen_t *tk_llama_gen_peek (lua_State *L, int i) {
+  return (tk_llama_gen_t *)luaL_checkudata(L, i, TK_LLAMA_GEN_MT);
+}
+
+static inline int tk_llama_gen_gc (lua_State *L) {
+  tk_llama_gen_t *g = tk_llama_gen_peek(L, 1);
+  if (!g->destroyed) {
+    if (g->ctx) llama_free(g->ctx);
+    if (g->model) llama_model_free(g->model);
+    g->destroyed = true;
+    tk_llama_refs--;
+    if (tk_llama_refs <= 0)
+      llama_backend_free();
+  }
+  return 0;
+}
+
+static inline int tk_llama_gen_dims_lua (lua_State *L) {
+  tk_llama_gen_t *g = tk_llama_gen_peek(L, 1);
+  lua_pushinteger(L, g->n_vocab);
+  return 1;
+}
+
+static int tk_llama_do_generate (lua_State *L, tk_llama_gen_t *g, const char *prompt, size_t plen, int opts_idx) {
+  int has_opts = opts_idx != 0;
+
+  int32_t max_tokens = has_opts
+    ? (int32_t)tk_lua_foptinteger(L, opts_idx, "generate", "max_tokens", TK_LLAMA_GEN_DEFAULT_MAX_TOKENS)
+    : TK_LLAMA_GEN_DEFAULT_MAX_TOKENS;
+  float temperature = has_opts
+    ? (float)tk_lua_foptnumber(L, opts_idx, "generate", "temperature", TK_LLAMA_GEN_DEFAULT_TEMP)
+    : TK_LLAMA_GEN_DEFAULT_TEMP;
+  int32_t top_k = has_opts
+    ? (int32_t)tk_lua_foptinteger(L, opts_idx, "generate", "top_k", TK_LLAMA_GEN_DEFAULT_TOP_K)
+    : TK_LLAMA_GEN_DEFAULT_TOP_K;
+  float top_p = has_opts
+    ? (float)tk_lua_foptnumber(L, opts_idx, "generate", "top_p", TK_LLAMA_GEN_DEFAULT_TOP_P)
+    : TK_LLAMA_GEN_DEFAULT_TOP_P;
+  float min_p = has_opts
+    ? (float)tk_lua_foptnumber(L, opts_idx, "generate", "min_p", TK_LLAMA_GEN_DEFAULT_MIN_P)
+    : TK_LLAMA_GEN_DEFAULT_MIN_P;
+  float repeat_penalty = has_opts
+    ? (float)tk_lua_foptnumber(L, opts_idx, "generate", "repeat_penalty", TK_LLAMA_GEN_DEFAULT_REPEAT_PENALTY)
+    : TK_LLAMA_GEN_DEFAULT_REPEAT_PENALTY;
+  uint32_t seed = has_opts
+    ? (uint32_t)tk_lua_foptinteger(L, opts_idx, "generate", "seed", g->seed)
+    : g->seed;
+
+  int n_stops = 0;
+  const char **stop_strs = NULL;
+  size_t *stop_lens = NULL;
+  int stop_ref = LUA_NOREF;
+  if (has_opts) {
+    lua_getfield(L, opts_idx, "stop");
+    if (lua_type(L, -1) == LUA_TTABLE) {
+      n_stops = (int)lua_objlen(L, -1);
+      if (n_stops > 0) {
+        stop_strs = (const char **)malloc((size_t)n_stops * sizeof(char *));
+        stop_lens = (size_t *)malloc((size_t)n_stops * sizeof(size_t));
+        if (!stop_strs || !stop_lens) {
+          free(stop_strs); free(stop_lens);
+          return luaL_error(L, "generate: out of memory");
+        }
+        for (int i = 0; i < n_stops; i++) {
+          lua_rawgeti(L, -1, i + 1);
+          if (lua_type(L, -1) != LUA_TSTRING) {
+            free(stop_strs); free(stop_lens);
+            return luaL_error(L, "generate: stop[%d] not a string", i + 1);
+          }
+          stop_strs[i] = lua_tolstring(L, -1, &stop_lens[i]);
+          lua_pop(L, 1);
+        }
+      }
+      stop_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    } else {
+      lua_pop(L, 1);
+    }
+  }
+
+  const struct llama_vocab *vocab = llama_model_get_vocab(g->model);
+
+  int32_t cap = (int32_t)plen + 16;
+  llama_token *ptoks = (llama_token *)malloc((size_t)cap * sizeof(llama_token));
+  char *out = NULL;
+  size_t out_len = 0, out_cap = 0;
+  struct llama_sampler *smpl = NULL;
+  struct llama_batch batch = { 0 };
+  int rc = 0;
+
+  if (!ptoks) {
+    rc = luaL_error(L, "generate: out of memory");
+    goto done;
+  }
+
+  int32_t nt = llama_tokenize(vocab, prompt, (int32_t)plen, ptoks, cap, false, true);
+  if (nt < 0) {
+    cap = -nt;
+    llama_token *t = (llama_token *)realloc(ptoks, (size_t)cap * sizeof(llama_token));
+    if (!t) {
+      rc = luaL_error(L, "generate: out of memory");
+      goto done;
+    }
+    ptoks = t;
+    nt = llama_tokenize(vocab, prompt, (int32_t)plen, ptoks, cap, false, true);
+    if (nt < 0) {
+      rc = luaL_error(L, "generate: tokenization failed");
+      goto done;
+    }
+  }
+  if (nt == 0) {
+    rc = luaL_error(L, "generate: empty prompt");
+    goto done;
+  }
+  if (nt >= g->n_ctx) {
+    rc = luaL_error(L, "generate: prompt (%d tokens) exceeds n_ctx (%d)", nt, g->n_ctx);
+    goto done;
+  }
+
+  struct llama_sampler_chain_params sp = llama_sampler_chain_default_params();
+  smpl = llama_sampler_chain_init(sp);
+  if (temperature <= 0.0f) {
+    llama_sampler_chain_add(smpl, llama_sampler_init_greedy());
+  } else {
+    if (repeat_penalty > 1.0f)
+      llama_sampler_chain_add(smpl,
+        llama_sampler_init_penalties(TK_LLAMA_GEN_DEFAULT_PENALTY_LAST_N, repeat_penalty, 0.0f, 0.0f));
+    llama_sampler_chain_add(smpl, llama_sampler_init_top_k(top_k));
+    llama_sampler_chain_add(smpl, llama_sampler_init_top_p(top_p, 1));
+    llama_sampler_chain_add(smpl, llama_sampler_init_min_p(min_p, 1));
+    llama_sampler_chain_add(smpl, llama_sampler_init_temp(temperature));
+    llama_sampler_chain_add(smpl, llama_sampler_init_dist(seed));
+  }
+
+  batch = llama_batch_init(g->n_ctx, 0, 1);
+  batch.n_tokens = 0;
+  for (int32_t i = 0; i < nt; i++) {
+    int32_t idx = batch.n_tokens++;
+    batch.token[idx] = ptoks[i];
+    batch.pos[idx] = i;
+    batch.n_seq_id[idx] = 1;
+    batch.seq_id[idx][0] = 0;
+    batch.logits[idx] = (i == nt - 1) ? 1 : 0;
+  }
+  if (llama_decode(g->ctx, batch) != 0) {
+    rc = luaL_error(L, "generate: prompt decode failed");
+    goto done;
+  }
+  int32_t n_past = nt;
+
+  char piece_buf[256];
+  int stopped = 0;
+
+  for (int32_t i = 0; i < max_tokens; i++) {
+    llama_token tok = llama_sampler_sample(smpl, g->ctx, -1);
+    llama_sampler_accept(smpl, tok);
+    if (llama_vocab_is_eog(vocab, tok)) break;
+
+    char *piece = piece_buf;
+    char *piece_dyn = NULL;
+    int32_t pn = llama_token_to_piece(vocab, tok, piece_buf, sizeof piece_buf, 0, false);
+    if (pn < 0) {
+      int32_t need = -pn;
+      piece_dyn = (char *)malloc((size_t)need);
+      if (!piece_dyn) {
+        rc = luaL_error(L, "generate: out of memory");
+        goto done;
+      }
+      pn = llama_token_to_piece(vocab, tok, piece_dyn, need, 0, false);
+      if (pn < 0) {
+        free(piece_dyn);
+        rc = luaL_error(L, "generate: token_to_piece failed");
+        goto done;
+      }
+      piece = piece_dyn;
+    }
+
+    if (pn > 0) {
+      if (out_len + (size_t)pn > out_cap) {
+        size_t ncap = out_cap ? out_cap * 2 : 256;
+        while (ncap < out_len + (size_t)pn) ncap *= 2;
+        char *no = (char *)realloc(out, ncap);
+        if (!no) {
+          free(piece_dyn);
+          rc = luaL_error(L, "generate: out of memory");
+          goto done;
+        }
+        out = no; out_cap = ncap;
+      }
+      memcpy(out + out_len, piece, (size_t)pn);
+      out_len += (size_t)pn;
+    }
+    free(piece_dyn);
+
+    for (int si = 0; si < n_stops; si++) {
+      size_t sl = stop_lens[si];
+      if (sl == 0 || out_len < sl) continue;
+      if (memcmp(out + out_len - sl, stop_strs[si], sl) == 0) {
+        out_len -= sl;
+        stopped = 1;
+        break;
+      }
+    }
+    if (stopped) break;
+
+    if (i + 1 < max_tokens) {
+      batch.n_tokens = 1;
+      batch.token[0] = tok;
+      batch.pos[0] = n_past;
+      batch.n_seq_id[0] = 1;
+      batch.seq_id[0][0] = 0;
+      batch.logits[0] = 1;
+      if (llama_decode(g->ctx, batch) != 0) {
+        rc = luaL_error(L, "generate: decode failed at token %d", i);
+        goto done;
+      }
+      n_past++;
+    }
+  }
+
+done:
+  if (batch.token) llama_batch_free(batch);
+  if (smpl) llama_sampler_free(smpl);
+  if (g->ctx) llama_memory_clear(llama_get_memory(g->ctx), true);
+  free(ptoks);
+  free(stop_strs);
+  free(stop_lens);
+  if (stop_ref != LUA_NOREF)
+    luaL_unref(L, LUA_REGISTRYINDEX, stop_ref);
+  if (rc != 0) {
+    free(out);
+    return rc;
+  }
+  lua_pushlstring(L, out ? out : "", out_len);
+  free(out);
+  return 1;
+}
+
+static inline int tk_llama_generate_lua (lua_State *L) {
+  tk_llama_gen_t *g = tk_llama_gen_peek(L, 1);
+  if (g->destroyed)
+    return luaL_error(L, "generate: generator destroyed");
+  size_t plen;
+  const char *prompt = luaL_checklstring(L, 2, &plen);
+  int opts_idx = 0;
+  if (!lua_isnoneornil(L, 3)) {
+    luaL_checktype(L, 3, LUA_TTABLE);
+    opts_idx = 3;
+  }
+  return tk_llama_do_generate(L, g, prompt, plen, opts_idx);
+}
+
+static inline int tk_llama_chat_lua (lua_State *L) {
+  tk_llama_gen_t *g = tk_llama_gen_peek(L, 1);
+  if (g->destroyed)
+    return luaL_error(L, "chat: generator destroyed");
+  if (g->tmpl == TK_LLAMA_TEMPLATE_RAW)
+    return luaL_error(L, "chat: no template configured; pass template='llama3'|'chatml' or use generate()");
+  luaL_checktype(L, 2, LUA_TTABLE);
+  int opts_idx = 0;
+  if (!lua_isnoneornil(L, 3)) {
+    luaL_checktype(L, 3, LUA_TTABLE);
+    opts_idx = 3;
+  }
+
+  lua_getfield(L, 2, "system");
+  const char *system = lua_isnil(L, -1) ? NULL : luaL_checkstring(L, -1);
+  lua_getfield(L, 2, "user");
+  if (lua_isnil(L, -1))
+    return luaL_error(L, "chat: user field required");
+  const char *user = luaL_checkstring(L, -1);
+  lua_getfield(L, 2, "assistant_prefix");
+  const char *prefix = lua_isnil(L, -1) ? NULL : luaL_checkstring(L, -1);
+
+  luaL_Buffer b;
+  luaL_buffinit(L, &b);
+  switch (g->tmpl) {
+    case TK_LLAMA_TEMPLATE_LLAMA3:
+      luaL_addstring(&b, "<|begin_of_text|>");
+      if (system) {
+        luaL_addstring(&b, "<|start_header_id|>system<|end_header_id|>\n\n");
+        luaL_addstring(&b, system);
+        luaL_addstring(&b, "<|eot_id|>");
+      }
+      luaL_addstring(&b, "<|start_header_id|>user<|end_header_id|>\n\n");
+      luaL_addstring(&b, user);
+      luaL_addstring(&b, "<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n");
+      if (prefix) luaL_addstring(&b, prefix);
+      break;
+    case TK_LLAMA_TEMPLATE_CHATML:
+      if (system) {
+        luaL_addstring(&b, "<|im_start|>system\n");
+        luaL_addstring(&b, system);
+        luaL_addstring(&b, "<|im_end|>\n");
+      }
+      luaL_addstring(&b, "<|im_start|>user\n");
+      luaL_addstring(&b, user);
+      luaL_addstring(&b, "<|im_end|>\n<|im_start|>assistant\n");
+      if (prefix) luaL_addstring(&b, prefix);
+      break;
+    default: break;
+  }
+  luaL_pushresult(&b);
+  size_t plen;
+  const char *prompt = lua_tolstring(L, -1, &plen);
+  return tk_llama_do_generate(L, g, prompt, plen, opts_idx);
+}
+
+static luaL_Reg tk_llama_gen_mt_fns[] = {
+  { "generate", tk_llama_generate_lua },
+  { "chat", tk_llama_chat_lua },
+  { "dims", tk_llama_gen_dims_lua },
+  { NULL, NULL }
+};
+
+static int tk_llama_do_embedder (lua_State *L, const char *path, int32_t n_seq, int32_t n_threads) {
   if (tk_llama_refs == 0) {
     llama_backend_init();
     llama_log_set(tk_llama_log_noop, NULL);
@@ -243,7 +586,7 @@ static int tk_llama_create_lua (lua_State *L) {
   if (!model) {
     if (tk_llama_refs == 0)
       llama_backend_free();
-    return luaL_error(L, "create: failed to load model '%s'", path);
+    return luaL_error(L, "embedder: failed to load model '%s'", path);
   }
   int32_t n_embd = llama_model_n_embd(model);
   int32_t n_ctx = llama_model_n_ctx_train(model);
@@ -261,7 +604,7 @@ static int tk_llama_create_lua (lua_State *L) {
     llama_model_free(model);
     if (tk_llama_refs == 0)
       llama_backend_free();
-    return luaL_error(L, "create: failed to create context (n_seq=%d)", n_seq);
+    return luaL_error(L, "embedder: failed to create context (n_seq=%d)", n_seq);
   }
   tk_llama_t *ll = tk_lua_newuserdata(L, tk_llama_t,
     TK_LLAMA_MT, tk_llama_mt_fns, tk_llama_gc);
@@ -277,8 +620,121 @@ static int tk_llama_create_lua (lua_State *L) {
   return 1;
 }
 
+static int tk_llama_do_generator (lua_State *L, const char *path, int32_t n_ctx_req, int32_t n_threads, uint32_t seed, tk_llama_template_t tmpl) {
+  if (tk_llama_refs == 0) {
+    llama_backend_init();
+    llama_log_set(tk_llama_log_noop, NULL);
+  }
+  struct llama_model_params mp = llama_model_default_params();
+  struct llama_model *model = llama_model_load_from_file(path, mp);
+  if (!model) {
+    if (tk_llama_refs == 0)
+      llama_backend_free();
+    return luaL_error(L, "generator: failed to load model '%s'", path);
+  }
+  int32_t n_ctx_train = llama_model_n_ctx_train(model);
+  int32_t n_ctx = n_ctx_req > 0 ? n_ctx_req : TK_LLAMA_GEN_DEFAULT_N_CTX;
+  if (n_ctx > n_ctx_train) n_ctx = n_ctx_train;
+  struct llama_context_params cp = llama_context_default_params();
+  cp.embeddings = false;
+  cp.n_ctx = (uint32_t)n_ctx;
+  cp.n_batch = (uint32_t)n_ctx;
+  cp.n_ubatch = (uint32_t)n_ctx;
+  cp.n_seq_max = 1;
+  cp.n_threads = n_threads;
+  cp.n_threads_batch = n_threads;
+  cp.no_perf = true;
+  struct llama_context *ctx = llama_init_from_model(model, cp);
+  if (!ctx) {
+    llama_model_free(model);
+    if (tk_llama_refs == 0)
+      llama_backend_free();
+    return luaL_error(L, "generator: failed to create context (n_ctx=%d)", n_ctx);
+  }
+  tk_llama_gen_t *gg = tk_lua_newuserdata(L, tk_llama_gen_t,
+    TK_LLAMA_GEN_MT, tk_llama_gen_mt_fns, tk_llama_gen_gc);
+  gg->model = model;
+  gg->ctx = ctx;
+  gg->n_vocab = llama_vocab_n_tokens(llama_model_get_vocab(model));
+  gg->n_ctx = n_ctx;
+  gg->seed = seed;
+  gg->tmpl = tmpl;
+  gg->destroyed = false;
+  tk_llama_refs++;
+  return 1;
+}
+
+static int tk_llama_embedder_lua (lua_State *L) {
+  const char *path = luaL_checkstring(L, 1);
+  int32_t n_seq = TK_LLAMA_DEFAULT_N_SEQ;
+  int32_t n_threads = omp_get_max_threads();
+  int t = lua_type(L, 2);
+  if (t == LUA_TNUMBER) {
+    n_seq = (int32_t)luaL_checkinteger(L, 2);
+  } else if (t == LUA_TTABLE) {
+    n_seq = (int32_t)tk_lua_foptinteger(L, 2, "embedder", "n_seq", TK_LLAMA_DEFAULT_N_SEQ);
+    n_threads = (int32_t)tk_lua_foptinteger(L, 2, "embedder", "n_threads", n_threads);
+  } else if (t != LUA_TNONE && t != LUA_TNIL) {
+    return luaL_error(L, "embedder: arg 2 must be integer or table");
+  }
+  return tk_llama_do_embedder(L, path, n_seq, n_threads);
+}
+
+static int tk_llama_generator_lua (lua_State *L) {
+  const char *path = luaL_checkstring(L, 1);
+  int32_t n_ctx = TK_LLAMA_GEN_DEFAULT_N_CTX;
+  int32_t n_threads = omp_get_max_threads();
+  uint32_t seed = 0;
+  tk_llama_template_t tmpl = TK_LLAMA_TEMPLATE_RAW;
+  int t = lua_type(L, 2);
+  if (t == LUA_TTABLE) {
+    n_ctx = (int32_t)tk_lua_foptinteger(L, 2, "generator", "n_ctx", TK_LLAMA_GEN_DEFAULT_N_CTX);
+    n_threads = (int32_t)tk_lua_foptinteger(L, 2, "generator", "n_threads", n_threads);
+    seed = (uint32_t)tk_lua_foptinteger(L, 2, "generator", "seed", 0);
+    const char *ts = tk_lua_foptstring(L, 2, "generator", "template", NULL);
+    if (tk_llama_parse_template(ts, &tmpl) != 0)
+      return luaL_error(L, "generator: invalid template '%s'", ts);
+  } else if (t != LUA_TNONE && t != LUA_TNIL) {
+    return luaL_error(L, "generator: arg 2 must be a table");
+  }
+  return tk_llama_do_generator(L, path, n_ctx, n_threads, seed, tmpl);
+}
+
+static int tk_llama_create_lua (lua_State *L) {
+  const char *path = luaL_checkstring(L, 1);
+  int t = lua_type(L, 2);
+  if (t == LUA_TNONE || t == LUA_TNIL)
+    return tk_llama_do_embedder(L, path, TK_LLAMA_DEFAULT_N_SEQ, omp_get_max_threads());
+  if (t == LUA_TNUMBER)
+    return tk_llama_do_embedder(L, path, (int32_t)luaL_checkinteger(L, 2), omp_get_max_threads());
+  if (t == LUA_TTABLE) {
+    lua_getfield(L, 2, "mode");
+    const char *mode = lua_type(L, -1) == LUA_TSTRING ? lua_tostring(L, -1) : NULL;
+    lua_pop(L, 1);
+    if (mode == NULL || strcmp(mode, "embed") == 0) {
+      int32_t n_seq = (int32_t)tk_lua_foptinteger(L, 2, "create", "n_seq", TK_LLAMA_DEFAULT_N_SEQ);
+      int32_t n_threads = (int32_t)tk_lua_foptinteger(L, 2, "create", "n_threads", omp_get_max_threads());
+      return tk_llama_do_embedder(L, path, n_seq, n_threads);
+    }
+    if (strcmp(mode, "generate") == 0) {
+      int32_t n_ctx = (int32_t)tk_lua_foptinteger(L, 2, "create", "n_ctx", TK_LLAMA_GEN_DEFAULT_N_CTX);
+      int32_t n_threads = (int32_t)tk_lua_foptinteger(L, 2, "create", "n_threads", omp_get_max_threads());
+      uint32_t seed = (uint32_t)tk_lua_foptinteger(L, 2, "create", "seed", 0);
+      tk_llama_template_t tmpl = TK_LLAMA_TEMPLATE_RAW;
+      const char *ts = tk_lua_foptstring(L, 2, "create", "template", NULL);
+      if (tk_llama_parse_template(ts, &tmpl) != 0)
+        return luaL_error(L, "create: invalid template '%s'", ts);
+      return tk_llama_do_generator(L, path, n_ctx, n_threads, seed, tmpl);
+    }
+    return luaL_error(L, "create: invalid mode '%s'", mode);
+  }
+  return luaL_error(L, "create: arg 2 must be integer, table, or nil");
+}
+
 static luaL_Reg tk_llama_fns[] = {
   { "create", tk_llama_create_lua },
+  { "embedder", tk_llama_embedder_lua },
+  { "generator", tk_llama_generator_lua },
   { NULL, NULL }
 };
 

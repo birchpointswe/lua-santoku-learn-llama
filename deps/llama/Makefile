@@ -7,12 +7,12 @@ results.mk:
 		git sparse-checkout set --no-cone /ggml /src /include /cmake /CMakeLists.txt
 	cd llama.cpp/src/models && \
 		for f in *.cpp; do \
-			case "$$f" in bert.cpp) ;; \
+			case "$$f" in bert.cpp|llama.cpp) ;; \
 				*) perl $(STUB) "$$f" ;; \
 			esac; \
 		done
 	cd llama.cpp/src && \
-		for f in llama-chat.cpp llama-grammar.cpp llama-sampler.cpp llama-quant.cpp llama-model-saver.cpp llama-adapter.cpp; do \
+		for f in llama-chat.cpp llama-grammar.cpp llama-quant.cpp llama-model-saver.cpp; do \
 			perl $(STUB) "$$f"; \
 		done
 	cd llama.cpp && cmake -B build \
