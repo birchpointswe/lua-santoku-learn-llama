@@ -2,8 +2,9 @@ STUB := $(CURDIR)/stub.pl
 
 results.mk:
 	[ ! -d llama.cpp ] && \
-		git clone --depth 1 --filter=blob:none --sparse https://github.com/ggml-org/llama.cpp && \
+		git clone --filter=blob:none --sparse https://github.com/ggml-org/llama.cpp && \
 		cd llama.cpp && \
+		git checkout e6b4acfe86af380c4e631973b9caa14337954423 && \
 		git sparse-checkout set --no-cone /ggml /src /include /cmake /CMakeLists.txt
 	cd llama.cpp/src/models && \
 		for f in *.cpp; do \
