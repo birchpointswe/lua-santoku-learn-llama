@@ -1,6 +1,6 @@
 local env = require("santoku.env")
 local ds = require("santoku.learn.dataset")
-local eval = require("santoku.learn.evaluator")
+local mtx = require("santoku.mtx")
 local optimize = require("santoku.learn.optimize")
 local str = require("santoku.string")
 local test = require("santoku.test")
@@ -18,13 +18,13 @@ end
 local llama = require("santoku.learn.llama")
 
 local cfg = {
-  data = { max = nil, tvr = 0.1 },
+  data = { max = nil },
   ridge = {
-    lambda = { def = 5.49e-02 },
-    propensity_a = { def = 0.16 },
-    propensity_b = { def = 2.06 },
+    lambda = { def = 2.35441e-05 },
     classes = 20,
-    search_trials = 400,
+    relevance = { "auc" },
+    exponent = { { def = 0.0120756 } },
+    search_trials = 0,
     k = 1,
   },
 }
@@ -38,15 +38,12 @@ test("newsgroups classifier (llama)", function ()
   end
 
   str.printf("[Data] Loading\n")
-  local train, test_set, validate = ds.read_20newsgroups_split(
+  local train, test_set = ds.read_20newsgroups_split(
     "test/res/20news-bydate-train",
     "test/res/20news-bydate-test",
-    cfg.data.max, nil, cfg.data.tvr)
+    cfg.data.max)
   local n_classes = cfg.ridge.classes
-  local label_off, label_nbr = train.sol_offsets, train.sol_neighbors
-  local val_label_off, val_label_nbr = validate.sol_offsets, validate.sol_neighbors
-  str.printf("[Data] train=%d val=%d test=%d classes=%d %s\n",
-    train.n, validate.n, test_set.n, n_classes, sw())
+  str.printf("[Data] train=%d test=%d classes=%d %s\n", train.n, test_set.n, n_classes, sw())
 
   str.printf("[Llama] Loading model\n")
   local enc = llama.create(model_path)
@@ -55,53 +52,40 @@ test("newsgroups classifier (llama)", function ()
 
   str.printf("[Llama] Encoding train (%d texts)\n", train.n)
   local train_codes = enc:encode(train.problems)
+  train_codes = mtx.create({ n_rows = train.n, n_cols = n_dims, data = train_codes })
   train.problems = nil
   str.printf("[Llama] Train encoded %s\n", sw())
 
-  str.printf("[Llama] Encoding val (%d texts)\n", validate.n)
-  local val_codes = enc:encode(validate.problems)
-  validate.problems = nil
-  str.printf("[Llama] Val encoded %s\n", sw())
-
   str.printf("[Ridge] Fitting\n")
-  local ridge_obj, best_params = optimize.ridge({
-    train_codes = train_codes,
-    n_samples = train.n,
-    n_dims = n_dims,
-    label_offsets = label_off,
-    label_neighbors = label_nbr,
+  local pool_y = train.labels
+  local enc2, ridge_obj, _, best_params, decider = optimize.krr({
+    pool_codes = train_codes,
+    pool_labels = pool_y,
+    pool_class = pool_y:neighbors(),
     n_labels = n_classes,
-    val_codes = val_codes,
-    val_n_samples = validate.n,
-    val_expected_offsets = val_label_off,
-    val_expected_neighbors = val_label_nbr,
+    folds = 3,
+    n_landmarks = 1024 * 8,
+    relevance = cfg.ridge.relevance,
+    exponent = cfg.ridge.exponent,
     lambda = cfg.ridge.lambda,
-    propensity_a = cfg.ridge.propensity_a,
-    propensity_b = cfg.ridge.propensity_b,
     k = cfg.ridge.k,
     search_trials = cfg.ridge.search_trials,
     each = util.make_ridge_log(stopwatch),
   })
   train_codes = nil -- luacheck: ignore
   collectgarbage("collect")
-  str.printf("[Ridge] lambda=%.4e pa=%.4f pb=%.4f %s\n",
-    best_params.lambda, best_params.propensity_a, best_params.propensity_b, sw())
-
-  str.printf("[Eval] Labeling splits\n")
-  local _, val_labels = ridge_obj:label(val_codes, validate.n, 1)
-  val_codes = nil -- luacheck: ignore
+  str.printf("[Ridge] lambda=%.4e %s\n", best_params.lambda, sw())
 
   str.printf("[Llama] Encoding test (%d texts)\n", test_set.n)
   local test_codes = enc:encode(test_set.problems)
   test_set.problems = nil
-  local _, test_labels = ridge_obj:label(test_codes, test_set.n, 1)
+  test_codes = mtx.create({ n_rows = test_set.n, n_cols = n_dims, data = test_codes })
+  local test_emb = enc2:encode(test_codes)
   test_codes = nil -- luacheck: ignore
-  str.printf("[Eval] Labels done %s\n", sw())
-
-  local val_stats = eval.class_accuracy(val_labels, validate.sol_offsets, validate.sol_neighbors, validate.n, n_classes)
-  local test_stats = eval.class_accuracy(test_labels, test_set.sol_offsets, test_set.sol_neighbors, test_set.n, n_classes)
-  str.printf("[Class] F1: val=%.2f test=%.2f %s\n",
-    val_stats.f1, test_stats.f1, sw())
+  local test_y = test_set.labels
+  local _, test_m = decider:score({ scores = ridge_obj:regress(test_emb),
+    n_samples = test_set.n, expected = test_y })
+  str.printf("[Class] test %s %s\n", util.fmt_metrics(test_m), sw())
 
   local _, total = stopwatch()
   str.printf("\nTotal: %.1fs\n", total)
