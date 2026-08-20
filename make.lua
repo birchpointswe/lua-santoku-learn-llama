@@ -5,9 +5,9 @@ local env = {
   public = true,
   vendor = {
     {
-      file = "deps/llama/llama.cpp-e6b4acfe86af380c4e631973b9caa14337954423-src.tar.gz",
-      url = "https://github.com/birchpointswe/lua-santoku-learn-llama/releases/download/vendor/llama.cpp-e6b4acfe86af380c4e631973b9caa14337954423-src.tar.gz",
-      sha256 = "0cabdc7182b2881e65cdea2b8e914f1dc45ca67a161138f125a76d1c629941a9",
+      file = "deps/llama/llama.cpp-e6b4acfe86af380c4e631973b9caa14337954423.tar.gz",
+      url = "https://github.com/ggml-org/llama.cpp/archive/e6b4acfe86af380c4e631973b9caa14337954423.tar.gz",
+      sha256 = "e771e8e99c0195a8e532f6e9b44e482742614aa83d779878f957cf76c84a5728",
     },
   },
   dependencies = {
