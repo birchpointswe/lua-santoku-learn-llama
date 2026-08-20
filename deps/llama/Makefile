@@ -1,11 +1,11 @@
 STUB := $(CURDIR)/stub.pl
+LLAMA_COMMIT := e6b4acfe86af380c4e631973b9caa14337954423
 
 results.mk:
-	[ ! -d llama.cpp ] && \
-		git clone --filter=blob:none --sparse https://github.com/ggml-org/llama.cpp && \
-		cd llama.cpp && \
-		git checkout e6b4acfe86af380c4e631973b9caa14337954423 && \
-		git sparse-checkout set --no-cone /ggml /src /include /cmake /CMakeLists.txt
+	[ -f llama.cpp-$(LLAMA_COMMIT)-src.tar.gz ] || { echo "missing vendored llama.cpp-$(LLAMA_COMMIT)-src.tar.gz; run 'toku vendor'" >&2; exit 1; }
+	if [ -d llama.cpp ]; then rm -rf llama.cpp; fi
+	mkdir llama.cpp
+	tar xf llama.cpp-$(LLAMA_COMMIT)-src.tar.gz -C llama.cpp
 	cd llama.cpp/src/models && \
 		for f in *.cpp; do \
 			case "$$f" in bert.cpp|llama.cpp) ;; \

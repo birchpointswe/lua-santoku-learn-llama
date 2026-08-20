@@ -1,8 +1,15 @@
 local env = {
   name = "santoku-learn-llama",
-  version = "2.0.0-1",
+  version = "2.1.0-1",
   license = "MIT",
   public = true,
+  vendor = {
+    {
+      file = "deps/llama/llama.cpp-e6b4acfe86af380c4e631973b9caa14337954423-src.tar.gz",
+      url = "https://github.com/birchpointswe/lua-santoku-learn-llama/releases/download/vendor/llama.cpp-e6b4acfe86af380c4e631973b9caa14337954423-src.tar.gz",
+      sha256 = "0cabdc7182b2881e65cdea2b8e914f1dc45ca67a161138f125a76d1c629941a9",
+    },
+  },
   dependencies = {
     "lua == 5.1",
     "santoku >= 2.0.0, < 3.0.0",
