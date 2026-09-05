@@ -4,10 +4,11 @@ local mtx = require("santoku.mtx")
 local optimize = require("santoku.learn.optimize")
 local str = require("santoku.string")
 local test = require("santoku.test")
+local fs = require("santoku.fs")
 local util = require("santoku.learn.util")
 local utc = require("santoku.utc")
 
-io.stdout:setvbuf("line")
+fs.stdout:setvbuf("line")
 
 local model_path = env.var("LLAMA_MODEL", nil)
 if not model_path then

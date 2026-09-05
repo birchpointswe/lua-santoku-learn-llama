@@ -1,8 +1,9 @@
 local env = require("santoku.env")
 local str = require("santoku.string")
 local test = require("santoku.test")
+local fs = require("santoku.fs")
 
-io.stdout:setvbuf("line")
+fs.stdout:setvbuf("line")
 
 local model_path = env.var("LLAMA_GEN_MODEL", nil)
 if not model_path then
