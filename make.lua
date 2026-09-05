@@ -16,7 +16,7 @@ end
 
 local env = {
   name = "santoku-learn-llama",
-  version = "2.1.3-1",
+  version = "2.1.4-1",
   license = "MIT",
   public = true,
   rules = {
