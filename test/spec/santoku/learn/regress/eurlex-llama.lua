@@ -72,7 +72,6 @@ test("eurlex classifier (llama)", function ()
   local test_y = test_set.labels
 
   str.printf("[Ridge] Fitting\n")
-  local buf = "test/res/eurlex57k/cv_"
   local _, ridge_obj, deploy, best, decider = optimize.krr({
     pool_codes = pool_codes,
     pool_labels = pool_y,
@@ -81,7 +80,7 @@ test("eurlex classifier (llama)", function ()
     relevance = cfg.relevance, exponent = cfg.exponent,
     kernel = cfg.kernel, nu = cfg.nu, gamma = cfg.gamma,
     lambda = cfg.lambda,
-    n_landmarks = cfg.n_landmarks, k = cfg.k, cv_buf_path = buf,
+    n_landmarks = cfg.n_landmarks, k = cfg.k,
     search_trials = cfg.search_trials, each = util.make_ridge_log(stopwatch),
   })
   pool_codes = nil -- luacheck: ignore

@@ -1,4 +1,5 @@
 local fs = require("santoku.fs")
+local rock = require("santoku.make.rock")
 local vendor = require("santoku.make.vendor")
 
 local vendored = {
@@ -25,13 +26,13 @@ local env = {
   dependencies = {
     "lua == 5.1",
     "santoku >= 2.0.0, < 3.0.0",
-    "santoku-matrix >= 2.0.0, < 3.0.0",
+    "santoku-matrix >= 2.2.0, < 3.0.0",
   },
   cflags = {
     "-std=gnu11", "-D_GNU_SOURCE", "-Wall", "-Wextra",
     "-Wno-unused-parameter", "-fopenmp",
-    "-I$(shell luarocks show santoku --rock-dir)/include/",
-    "-I$(shell luarocks show santoku-matrix --rock-dir)/include/",
+    rock.include("santoku"),
+    rock.include("santoku-matrix"),
     "-I$(PWD)/deps/llama/llama.cpp/include",
     "-I$(PWD)/deps/llama/llama.cpp/ggml/include",
   },
@@ -44,7 +45,7 @@ local env = {
   },
   test = {
     dependencies = {
-      "santoku-learn >= 2.0.0, < 3.0.0",
+      "santoku-learn >= 3.0.0, < 4.0.0",
       "santoku-fs >= 2.0.0, < 3.0.0",
       "lua-cjson >= 2.1.0.10-1",
     }
