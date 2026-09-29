@@ -27,6 +27,7 @@ local cfg = {
   lambda = { def = 5.23323e-06 },
   relevance = { "auc" },
   exponent = { { def = 4.78458 } },
+  decode_offset = { def = 0.32429025 },
   k = 256,
   search_trials = 0,
   folds = 3,
@@ -79,7 +80,7 @@ test("eurlex classifier (llama)", function ()
     folds = cfg.folds,
     relevance = cfg.relevance, exponent = cfg.exponent,
     kernel = cfg.kernel, nu = cfg.nu, gamma = cfg.gamma,
-    lambda = cfg.lambda,
+    lambda = cfg.lambda, decode_offset = cfg.decode_offset,
     n_landmarks = cfg.n_landmarks, k = cfg.k,
     search_trials = cfg.search_trials, each = util.make_ridge_log(stopwatch),
   })

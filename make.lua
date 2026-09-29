@@ -17,7 +17,7 @@ end
 
 local env = {
   name = "santoku-learn-llama",
-  version = "2.1.5-1",
+  version = "3.0.0-1",
   license = "MIT",
   public = true,
   rules = {
@@ -26,7 +26,7 @@ local env = {
   dependencies = {
     "lua == 5.1",
     "santoku >= 2.0.0, < 3.0.0",
-    "santoku-matrix >= 2.2.0, < 3.0.0",
+    "santoku-matrix >= 3.0.0, < 4.0.0",
   },
   cflags = {
     "-std=gnu11", "-D_GNU_SOURCE", "-Wall", "-Wextra",
@@ -45,7 +45,7 @@ local env = {
   },
   test = {
     dependencies = {
-      "santoku-learn >= 3.0.0, < 4.0.0",
+      "santoku-learn >= 4.0.0, < 5.0.0",
       "santoku-fs >= 2.0.0, < 3.0.0",
       "lua-cjson >= 2.1.0.10-1",
     }
