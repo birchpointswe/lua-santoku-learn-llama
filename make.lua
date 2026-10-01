@@ -17,7 +17,7 @@ end
 
 local env = {
   name = "santoku-learn-llama",
-  version = "3.0.0-1",
+  version = "3.1.0-1",
   license = "MIT",
   public = true,
   rules = {
@@ -41,7 +41,6 @@ local env = {
     "$(shell find $(PWD)/deps/llama/llama.cpp/build -name '*.a' | tr '\\n' ' ')",
     "-Wl,--end-group",
     "-lstdc++", "-lm", "-fopenmp",
-    "$(shell pkg-config --libs blas lapack lapacke)",
   },
   test = {
     dependencies = {

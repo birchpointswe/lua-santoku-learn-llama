@@ -27,14 +27,13 @@ results.mk: Makefile
 		-DLLAMA_BUILD_TOOLS=OFF \
 		-DGGML_NATIVE=ON \
 		-DGGML_OPENMP=ON \
-		-DGGML_BLAS=ON \
-		-DGGML_BLAS_VENDOR=OpenBLAS \
+		-DGGML_BLAS=OFF \
 		-DGGML_CUDA=OFF \
 		-DGGML_METAL=OFF \
 		-DGGML_VULKAN=OFF \
 		-DGGML_OPENCL=OFF \
 		-DGGML_SYCL=OFF \
 		-DGGML_RPC=OFF \
-		-DGGML_LLAMAFILE=OFF
+		-DGGML_LLAMAFILE=ON
 	cd llama.cpp && cmake --build build -j$$(nproc)
 	touch results.mk
