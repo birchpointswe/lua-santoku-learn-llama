@@ -1,3 +1,5 @@
+-- SPDX-License-Identifier: MIT
+-- SPDX-FileCopyrightText: 2026 Birch Point SWE
 local env = require("santoku.env")
 local ds = require("santoku.learn.dataset")
 local mtx = require("santoku.mtx")

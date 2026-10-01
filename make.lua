@@ -1,3 +1,5 @@
+-- SPDX-License-Identifier: MIT
+-- SPDX-FileCopyrightText: 2026 Birch Point SWE
 local fs = require("santoku.fs")
 local rock = require("santoku.make.rock")
 local vendor = require("santoku.make.vendor")
@@ -17,8 +19,41 @@ end
 
 local env = {
   name = "santoku-learn-llama",
-  version = "3.1.0-1",
+  version = "3.1.1-1",
   license = "MIT",
+  copyright = "Birch Point SWE",
+  vendored = {
+    {
+      name = "llama.cpp", version = "e6b4acfe",
+      source = "https://github.com/ggml-org/llama.cpp/archive/e6b4acfe86af380c4e631973b9caa14337954423.tar.gz",
+      copyright = "(c) 2023-2026 The ggml authors",
+      license = "MIT",
+      note = "deps/llama/stub.pl rewrites some model sources before the build.",
+    },
+    {
+      name = "YaRN",
+      source = "llama.cpp, ggml/src/ggml-cpu/ops.cpp",
+      copyright = "(c) 2023 Jeffrey Quesnelle and Bowen Peng",
+      license = "MIT",
+    },
+    {
+      name = "llamafile sgemm",
+      source = "llama.cpp, ggml/src/ggml-cpu/llamafile/sgemm.cpp",
+      copyright = "2024 Mozilla Foundation",
+      license = "MIT",
+    },
+    {
+      name = "ggllm.cpp BPE tokenizer",
+      source = "llama.cpp, src/llama-vocab.cpp",
+      copyright = "(c) 2023 https://github.com/cmp-nct",
+      license = "MIT",
+    },
+    {
+      name = "Unicode Character Database tables",
+      source = "llama.cpp, src/unicode-data.cpp",
+      license = "Unicode-3.0",
+    },
+  },
   public = true,
   rules = {
     include = include,
